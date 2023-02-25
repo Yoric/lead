@@ -6,6 +6,7 @@ use clap::Parser;
 use data::CompanyName;
 
 mod data;
+mod time;
 
 #[derive(clap::Parser, Debug)]
 #[command(author, version, about)]
@@ -19,8 +20,9 @@ struct Args {
     #[command(subcommand)]
     command: Command,
 
-    #[arg(default_value_t=Utc::now())]
-    updated_on: DateTime<Utc>,
+    //#[arg(long, value_parser=|s| Ok::<_, anyhow::Error>(Some(time::parse_utc(s)?)))]
+    #[arg(long, value_parser=time::parse_utc)]
+    updated_on: Option<DateTime<Utc>>,
 
     #[arg(long, default_value_t={"leads.yml".to_string()})]
     file: String,
@@ -77,10 +79,13 @@ enum Command {
         comment: String,
     },
 
-    /// Update
+    /// Add a status update.
     Status {
         status: String,
     },
+
+    #[command(hide = true)]
+    SelfCheck,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -98,7 +103,11 @@ enum NoteCommand {
 
 impl Args {
     pub fn execute(self, db: &mut data::Leads) -> Result<(), anyhow::Error> {
+        let updated_on = self.updated_on.unwrap_or_else(Utc::now);
         match self.command {
+            Command::SelfCheck => {
+                println!("Self check passed");
+            }
             Command::New { position, source } => {
                 if self.index.is_some() {
                     return Err(anyhow::anyhow!(
@@ -124,6 +133,12 @@ impl Args {
                     .context("Failed to get lead")?;
                 lead.add_note(name, note);
             }
+            Command::Status { status } => {
+                let lead = db
+                    .get_mut(&self.company, self.index)
+                    .context("Failed to get lead")?;
+                lead.add_status(updated_on, status);
+            }
 
             Command::Note(NoteCommand::Replace { .. }) => {
                 unimplemented!()
@@ -139,9 +154,6 @@ impl Args {
                 unimplemented!()
             }
             Command::RedFlag { .. } => {
-                unimplemented!()
-            }
-            Command::Status { .. } => {
                 unimplemented!()
             }
         }

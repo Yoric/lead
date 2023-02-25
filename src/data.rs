@@ -1,6 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::{HashMap, BTreeMap}, sync::Arc};
 
 use anyhow::{anyhow, Context};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// A lead e.g. a company.
@@ -127,18 +128,18 @@ pub struct Lead {
     /// The source of the lead, typically a URL.
     source: String,
 
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     notes: HashMap<String, Vec<String>>,
 
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     interviews: Vec<(InterviewName, Interview)>,
 
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     red_flags: Vec<String>,
 
     /// The status updates, from oldest to most recent.
-    #[serde(default)]
-    status_updates: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    status_updates: BTreeMap<DateTime<Utc>, String>,
 
     /// The reason for which this lead was closed, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -152,13 +153,20 @@ impl Lead {
             source,
             interviews: Vec::new(),
             red_flags: Vec::new(),
-            status_updates: Vec::new(),
+            status_updates: vec![(Utc::now(), "Created".to_string())].into_iter().collect(),
             closed: None,
             notes: HashMap::new(),
         }
     }
+
+    /// Add a note.
     pub fn add_note(&mut self, name: String, note: String) {
         self.notes.entry(name).or_default().push(note);
+    }
+
+    /// Add a status update.
+    pub fn add_status(&mut self, date: DateTime<Utc>, status: String) {
+        self.status_updates.insert(date, status);
     }
 }
 
