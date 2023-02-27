@@ -12,4 +12,5 @@ clap = { version = "4.1", features = ["derive"] }
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_yaml = "0.9"
 dateparser = "0.1.8"
+dotenv = "0.15.0"
 

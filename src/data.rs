@@ -1,4 +1,7 @@
-use std::{collections::{HashMap, BTreeMap}, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc, fmt::Display,
+};
 
 use anyhow::{anyhow, Context};
 use chrono::{DateTime, Utc};
@@ -9,6 +12,11 @@ use serde::{Deserialize, Serialize};
 #[serde(transparent)]
 pub struct CompanyName {
     name: Arc<str>,
+}
+impl Display for CompanyName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.name.fmt(f)
+    }
 }
 impl From<String> for CompanyName {
     fn from(name: String) -> Self {
@@ -32,6 +40,11 @@ pub struct Leads {
     /// All our leads, indexed by the company name.
     #[serde(flatten)]
     pub leads: HashMap<CompanyName, Vec<Lead>>,
+}
+impl Default for Leads {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 impl Leads {
     pub fn new() -> Self {
@@ -68,6 +81,7 @@ impl Leads {
     }
     pub fn close_lead(
         &mut self,
+        date: DateTime<Utc>,
         name: &CompanyName,
         index: Option<usize>,
         reason: String,
@@ -90,7 +104,37 @@ impl Leads {
                 ))
             }
         };
-        lead.closed = Some(reason);
+        lead.add_status(date, format!("Closed: {}", reason));
+
+        // Cleanup if it's the last position for this company.
+        if positions.is_empty() {
+            self.leads.remove(name);
+        }
+        Ok(lead)
+    }
+    pub fn get(
+        &self,
+        name: &CompanyName,
+        index: Option<usize>,
+    ) -> Result<&Lead, anyhow::Error> {
+        let positions = self.leads.get(name).context("No such company")?;
+        let lead = match index {
+            None if positions.len() == 1 => &positions[0],
+            None => {
+                return Err(anyhow!(
+                    "There are {} positions for this company, please specify which one to modify",
+                    positions.len()
+                ))
+            }
+            Some(index) if index < positions.len() => &positions[index],
+            Some(index) => {
+                return Err(anyhow!(
+                    "There are only {} positions for this company, cannot modify position {}",
+                    positions.len(),
+                    index
+                ))
+            }
+        };
         Ok(lead)
     }
     pub fn get_mut(
@@ -120,6 +164,24 @@ impl Leads {
     }
 }
 
+impl<'a> std::iter::IntoIterator for &'a Leads {
+    type Item = (&'a CompanyName, &'a Vec<Lead>);
+    type IntoIter = std::collections::hash_map::Iter<'a, CompanyName, Vec<Lead>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.leads.iter()
+    }
+}
+
+impl<'a> std::iter::IntoIterator for &'a mut Leads {
+    type Item = (&'a CompanyName, &'a Vec<Lead>);
+    type IntoIter = std::collections::hash_map::Iter<'a, CompanyName, Vec<Lead>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.leads.iter()
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Lead {
     /// The name of the position.
@@ -141,9 +203,13 @@ pub struct Lead {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     status_updates: BTreeMap<DateTime<Utc>, String>,
 
-    /// The reason for which this lead was closed, if any.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    closed: Option<String>,
+    /// The todo list (things that the candidate needs to do), from oldest to most recent.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    todo: Vec<Todo>,
+
+    /// The waitlist (things that the employer needs to do), from oldest to most recent.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    wait: Vec<Wait>,
 }
 
 impl Lead {
@@ -153,9 +219,12 @@ impl Lead {
             source,
             interviews: Vec::new(),
             red_flags: Vec::new(),
-            status_updates: vec![(Utc::now(), "Created".to_string())].into_iter().collect(),
-            closed: None,
+            status_updates: vec![(Utc::now(), "Created".to_string())]
+                .into_iter()
+                .collect(),
             notes: HashMap::new(),
+            todo: Vec::new(),
+            wait: Vec::new(),
         }
     }
 
@@ -168,10 +237,50 @@ impl Lead {
     pub fn add_status(&mut self, date: DateTime<Utc>, status: String) {
         self.status_updates.insert(date, status);
     }
+
+    pub fn add_todo(&mut self, updated_on: DateTime<Utc>, action: String, deadline: DateTime<Utc>) {
+        self.add_status(updated_on, format!("TODO: {}", action));
+        self.todo.push(Todo { action, deadline });
+    }
+
+    pub fn complete_todo(&mut self, updated_on: DateTime<Utc>, index: usize) -> Result<(), anyhow::Error> {
+        if index >= self.todo.len() {
+            return Err(anyhow!("No such todo"));
+        }
+        let todo = self.todo.remove(index);
+        self.add_status(updated_on, format!("DONE: {}", todo.action));
+        Ok(())
+    }
+
+    pub fn add_wait(&mut self, updated_on: DateTime<Utc>, action: String, expected: Option<DateTime<Utc>>) {
+        self.add_status(updated_on, format!("WAITING: {}", action));
+        self.wait.push(Wait { action, expected });
+    }
+
+    pub fn complete_wait(&mut self, updated_on: DateTime<Utc>, index: usize) -> Result<(), anyhow::Error> {
+        if index >= self.wait.len() {
+            return Err(anyhow!("No such wait"));
+        }
+        let wait = self.wait.remove(index);
+        self.add_status(updated_on, format!("RECEIVED: {}", wait.action));
+        Ok(())
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Interview {
     pre_notes: Vec<String>,
     post_notes: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Todo {
+    action: String,
+    deadline: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Wait {
+    action: String,
+    expected: Option<DateTime<Utc>>,
 }

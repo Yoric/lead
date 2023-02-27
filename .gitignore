@@ -1,3 +1,4 @@
 leads.yml
 archive.yml
 target/
+.env
